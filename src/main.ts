@@ -42,7 +42,9 @@ async function bootstrap() {
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('docs', app, document); // Swagger UI will be available 
+  SwaggerModule.setup('docs', app, document, {
+    useGlobalPrefix: false,
+  }); // Swagger UI will be available 
 
 
   const port = configService.get<number>('PORT') ?? 3000;
