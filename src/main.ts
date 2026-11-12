@@ -13,8 +13,8 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
   app.enableCors({
-    origin: true, // Reflects 'http://localhost:4200' instead of '*'
-    credentials: true, // Required when frontend uses credentials: 'include'
+    origin: true,
+    credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
