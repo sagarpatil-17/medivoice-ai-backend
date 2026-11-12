@@ -4,6 +4,7 @@ import { AppointmentsService } from './appointments.service.js';
 
 @Module({
   controllers: [AppointmentsController],
-  providers: [AppointmentsService]
+  providers: [AppointmentsService],
+  exports: [AppointmentsService]
 })
-export class AppointmentsModule {}
+export class AppointmentsModule { }

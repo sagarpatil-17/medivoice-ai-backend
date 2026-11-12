@@ -8,6 +8,7 @@ import { DoctorSchedulesModule } from './modules/doctor-schedules/doctor-schedul
 import { PatientsModule } from './modules/patients/patients.module.js';
 import { AppointmentsModule } from './modules/appointments/appointments.module.js';
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
+import { VapiModule } from './modules/vapi/vapi.module.js';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module.js';
     PatientsModule,
     AppointmentsModule,
     DashboardModule,
+    VapiModule,
     ConfigModule.forRoot({
       isGlobal: true
     }),
