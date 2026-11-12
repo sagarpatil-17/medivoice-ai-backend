@@ -11,13 +11,14 @@ async function bootstrap() {
   const swaggerUser = configService.getOrThrow<string>('SWAGGER_USER');
   const swaggerPassword = configService.getOrThrow<string>('SWAGGER_PASSWORD');
 
-  app.enableCors({ origin: '*' });
   app.setGlobalPrefix('api');
   app.enableCors({
-    origin: true,
+    origin: true, // Reflects 'http://localhost:4200' instead of '*'
+    credentials: true, // Required when frontend uses credentials: 'include'
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
+
 
   app.useGlobalPipes(
     new ValidationPipe({
