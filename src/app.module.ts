@@ -6,6 +6,8 @@ import { DepartmentsModule } from './modules/departments/departments.module.js';
 import { DoctorsModule } from './modules/doctors/doctors.module.js';
 import { DoctorSchedulesModule } from './modules/doctor-schedules/doctor-schedules.module.js';
 import { PatientsModule } from './modules/patients/patients.module.js';
+import { AppointmentsModule } from './modules/appointments/appointments.module.js';
+import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { PatientsModule } from './modules/patients/patients.module.js';
     ConfigModule.forRoot({
       isGlobal: true
     }),
+    AppointmentsModule,
+    DashboardModule,
   ],
   controllers: []
 })
