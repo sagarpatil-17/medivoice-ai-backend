@@ -14,6 +14,11 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { AuthService } from './auth.service.js';
 import { LoginDto } from './dto/login.dto.js';
 import { AccessTokenGuard } from './guards/access-token.guard.js';
+import { UserRole } from '@prisma/client';
+import { Roles } from '../../common/decorators/roles.decorator.js';
+import { RolesGuard } from '../../common/guards/roles.guard.js';
+import { SignupDto } from './dto/signup.dto.js';
+import { ApiTags } from '@nestjs/swagger';
 
 interface AuthenticatedRequest extends Request {
     user: {
@@ -24,6 +29,7 @@ interface AuthenticatedRequest extends Request {
     };
 }
 
+@ApiTags('AuthController')
 @Controller('auth')
 export class AuthController {
     constructor(private readonly authService: AuthService) { }
@@ -117,5 +123,12 @@ export class AuthController {
     @UseGuards(AccessTokenGuard)
     getProfile(@CurrentUser() user: AuthenticatedRequest['user']) {
         return user;
+    }
+
+    @Post('signup')
+    @UseGuards(AccessTokenGuard, RolesGuard)
+    @Roles(UserRole.ADMIN)
+    async signup(@Body() dto: SignupDto) {
+        return this.authService.signup(dto);
     }
 }

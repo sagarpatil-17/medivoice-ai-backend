@@ -1,14 +1,18 @@
 import {
+    BadRequestException,
+    ConflictException,
     Injectable,
     UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes, randomUUID } from 'crypto';
-import { comparePassword } from '../../common/utils/password.util.js';
+import { comparePassword, hashPassword } from '../../common/utils/password.util.js';
 import { PrismaService } from '../../database/prisma.service.js';
 import { LoginDto } from './dto/login.dto.js';
 import { JwtPayload } from './types/jwt-payload.type.js';
+import { Prisma } from '@prisma/client';
+import { SignupDto } from './dto/signup.dto.js';
 
 const REFRESH_COOKIE_TTL_DAYS = 7;
 
@@ -266,5 +270,67 @@ export class AuthService {
         });
 
         return { message: 'All sessions revoked successfully' };
+    }
+
+    async signup(dto: SignupDto) {
+        const email = dto.email.trim().toLowerCase();
+
+        // Do not allow admin creation through this endpoint.
+        if (dto.role === 'ADMIN') {
+            throw new BadRequestException(
+                'Admin accounts must be created through a secure provisioning process',
+            );
+        }
+
+        // bcrypt supports a maximum of 72 password bytes.
+        if (Buffer.byteLength(dto.password, 'utf8') > 72) {
+            throw new BadRequestException(
+                'Password must not exceed 72 bytes',
+            );
+        }
+
+        const existingUser = await this.prisma.user.findUnique({
+            where: { email },
+        });
+
+        if (existingUser) {
+            throw new ConflictException('Email is already registered');
+        }
+
+        const passwordHash = await hashPassword(dto.password);
+
+        try {
+            const user = await this.prisma.user.create({
+                data: {
+                    name: dto.name.trim(),
+                    email,
+                    passwordHash,
+                    role: dto.role,
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    role: true,
+                    isActive: true,
+                    createdAt: true,
+                },
+            });
+
+            return {
+                message: 'Staff account created successfully',
+                user,
+            };
+        } catch (error) {
+            // Handle duplicate email even if two requests arrive simultaneously.
+            if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002'
+            ) {
+                throw new ConflictException('Email is already registered');
+            }
+
+            throw error;
+        }
     }
 }

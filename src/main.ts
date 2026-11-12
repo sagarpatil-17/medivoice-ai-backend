@@ -24,7 +24,7 @@ async function bootstrap() {
 
   // Protect Swagger UI and its JSON endpoint with a username and password
   app.use(
-    ['/api', '/api-json'],
+    ['/docs', '/docs-json'],
     basicAuth({
       challenge: true,
       users: {
