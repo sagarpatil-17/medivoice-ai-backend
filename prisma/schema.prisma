@@ -124,6 +124,7 @@ model Doctor {
   department Department @relation(fields: [departmentId], references: [id])
 
   schedules    DoctorSchedule[]
+  dayLocks     DoctorDayLock[]
   appointments Appointment[]
 
   createdAt DateTime @default(now())
@@ -156,6 +157,17 @@ model DoctorSchedule {
   updatedAt DateTime @updatedAt
 
   @@index([doctorId, dayOfWeek, isActive])
+}
+
+model DoctorDayLock {
+  id          String @id @default(auto()) @map("_id") @db.ObjectId
+  doctorId    String @db.ObjectId
+  dateKey     String
+  lockVersion Int    @default(0)
+
+  doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  @@unique([doctorId, dateKey])
 }
 
 model Appointment {
