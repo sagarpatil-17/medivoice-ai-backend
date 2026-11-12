@@ -17,11 +17,11 @@ import { DashboardModule } from './modules/dashboard/dashboard.module.js';
     DoctorsModule,
     DoctorSchedulesModule,
     PatientsModule,
+    AppointmentsModule,
+    DashboardModule,
     ConfigModule.forRoot({
       isGlobal: true
     }),
-    AppointmentsModule,
-    DashboardModule,
   ],
   controllers: []
 })
