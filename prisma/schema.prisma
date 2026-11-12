@@ -6,3 +6,187 @@ datasource db {
   provider = "mongodb"
   url      = env("DATABASE_URL")
 }
+
+// -------------------------
+// ENUMS
+// -------------------------
+
+enum UserRole {
+  ADMIN
+  RECEPTIONIST
+  DOCTOR
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum BookingSource {
+  ADMIN
+  RECEPTIONIST
+  VOICE_AI
+  PATIENT_PORTAL
+}
+
+// -------------------------
+// USER
+// -------------------------
+
+model User {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  name         String
+  email        String   @unique
+  passwordHash String
+  phone        String?
+  role         UserRole @default(RECEPTIONIST)
+  isActive     Boolean  @default(true)
+
+  doctor Doctor?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role, isActive])
+}
+
+// -------------------------
+// PATIENT
+// -------------------------
+
+model Patient {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  firstName   String
+  lastName    String
+  phone       String    @unique
+  email       String?
+  dateOfBirth DateTime?
+  gender      Gender?
+  address     String?
+  notes       String?
+
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([firstName, lastName])
+}
+
+// -------------------------
+// DEPARTMENT
+// -------------------------
+
+model Department {
+  id          String  @id @default(auto()) @map("_id") @db.ObjectId
+  name        String  @unique
+  code        String  @unique
+  description String?
+  isActive    Boolean @default(true)
+
+  doctors Doctor[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// -------------------------
+// DOCTOR
+// -------------------------
+
+model Doctor {
+  id           String @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String @unique @db.ObjectId
+  departmentId String @db.ObjectId
+
+  fullName        String
+  specialization  String
+  qualification   String?
+  experienceYears Int     @default(0)
+  consultationFee Int     @default(0)
+  bio             String?
+  isActive        Boolean @default(true)
+
+  user       User       @relation(fields: [userId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
+
+  schedules    DoctorSchedule[]
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([departmentId, isActive])
+  @@index([specialization])
+}
+
+// -------------------------
+// DOCTOR SCHEDULE
+// -------------------------
+
+model DoctorSchedule {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  doctorId String @db.ObjectId
+
+  // 0 = Sunday, 1 = Monday ... 6 = Saturday
+  dayOfWeek Int
+
+  startTime String
+  endTime   String
+
+  slotDurationMinutes Int @default(30)
+
+  breakStartTime String?
+  breakEndTime   String?
+
+  isActive Boolean @default(true)
+
+  doctor Doctor @relation(fields: [doctorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId, dayOfWeek, isActive])
+}
+
+// -------------------------
+// APPOINTMENT
+// -------------------------
+
+model Appointment {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  patientId String @db.ObjectId
+  doctorId  String @db.ObjectId
+
+  startAt DateTime
+  endAt   DateTime
+
+  status        AppointmentStatus @default(PENDING)
+  bookingSource BookingSource     @default(VOICE_AI)
+
+  reason             String?
+  cancellationReason String?
+  cancelledAt        DateTime?
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  doctor  Doctor  @relation(fields: [doctorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Prevent two appointments for the same doctor
+  // at exactly the same start time.
+  @@unique([doctorId, startAt])
+  @@index([patientId, startAt])
+  @@index([doctorId, startAt, status])
+  @@index([status, startAt])
+}
