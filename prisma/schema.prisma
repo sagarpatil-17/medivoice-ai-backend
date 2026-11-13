@@ -48,6 +48,25 @@ enum VoiceCancellationSessionStatus {
   EXPIRED
 }
 
+enum CallStatus {
+  QUEUED
+  RINGING
+  IN_PROGRESS
+  TRANSFERRING
+  COMPLETED
+  FAILED
+  NO_ANSWER
+}
+
+enum CallOutcome {
+  APPOINTMENT_BOOKED
+  APPOINTMENT_CANCELLED
+  HUMAN_TRANSFER
+  FAQ_RESOLVED
+  UNRESOLVED
+  UNKNOWN
+}
+
 // MODELS 
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
@@ -259,4 +278,35 @@ model VoiceCancellationSession {
 
   @@index([expiresAt])
   @@index([patientId, status])
+}
+
+model Call {
+  id         String @id @default(auto()) @map("_id") @db.ObjectId
+  vapiCallId String @unique
+
+  vapiStatus String?
+  status     CallStatus  @default(QUEUED)
+  outcome    CallOutcome @default(UNKNOWN)
+
+  callType       String?
+  customerNumber String?
+
+  startedAt       DateTime?
+  endedAt         DateTime?
+  durationSeconds Int?
+
+  endedReason  String?
+  transcript   String?
+  summary      String?
+  recordingUrl String?
+
+  appointmentId String? @db.ObjectId
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([outcome, createdAt])
+  @@index([customerNumber])
+  @@index([startedAt])
 }

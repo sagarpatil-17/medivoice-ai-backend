@@ -1,3 +1,4 @@
+
 export interface VapiToolCall {
     id: string;
     type: 'function';
@@ -7,12 +8,44 @@ export interface VapiToolCall {
     };
 }
 
+export interface VapiCall {
+    id?: string;
+    startedAt?: string;
+    endedAt?: string;
+    type?: string;
+}
+
 export interface VapiServerMessage {
     type: string;
-    call?: {
-        id?: string;
-    };
+
+    call?: VapiCall;
+
+    // Tool calls
     toolCallList?: VapiToolCall[];
+
+    // Status updates
+    status?: string;
+
+    // End-of-call report
+    endedReason?: string;
+    startedAt?: string;
+    endedAt?: string;
+
+    // Transcript
+    transcript?: string;
+    transcriptType?: string;
+    role?: string;
+
+    // End-of-call artifacts
+    artifact?: {
+        transcript?: string;
+        recording?: unknown;
+        messages?: unknown[];
+    };
+
+    // Optional summary
+    summary?: string;
+    analysis?: unknown;
 }
 
 export interface VapiWebhookBody {
