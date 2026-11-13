@@ -200,3 +200,18 @@ model Appointment {
   @@index([doctorId, startAt, status])
   @@index([status, startAt])
 }
+
+model DoctorKnowledge {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  specialty   String
+  department  String
+  description String
+  synonyms    String[]
+  embedding   Float[]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([specialty])
+  @@index([isActive])
+}
