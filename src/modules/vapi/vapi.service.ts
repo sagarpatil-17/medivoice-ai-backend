@@ -1,10 +1,12 @@
 
 import {
     BadRequestException,
+    ConflictException,
     HttpException,
     Injectable,
     InternalServerErrorException,
     Logger,
+    NotFoundException,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../database/prisma.service.js';
@@ -22,6 +24,7 @@ import {
 
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { generateCancellationToken, hashCancellationToken } from './utils/cancellation-token.util.js';
 
 @Injectable()
 export class VapiService {
@@ -180,6 +183,12 @@ export class VapiService {
 
             case 'book_appointment':
                 return this.bookAppointment(args, callId);
+
+            case 'find_appointment_for_cancellation':
+                return this.findAppointmentForCancellation(args, callId);
+
+            case 'cancel_appointment':
+                return this.cancelAppointment(args, callId);
 
             default:
                 throw new BadRequestException(
@@ -489,6 +498,207 @@ export class VapiService {
 
             throw error;
         }
+    }
+
+    // Find Appointment For Cancellation
+    private async findAppointmentForCancellation(
+        args: Record<string, unknown>,
+        callId: string,
+    ) {
+        const bookingReference = this.getRequiredString(
+            args,
+            'bookingReference',
+            14,
+        ).toUpperCase();
+
+        const phone = this.getRequiredString(args, 'phone', 16);
+
+        if (!/^MED-[A-F0-9]{10}$/.test(bookingReference)) {
+            throw new BadRequestException('Invalid booking reference.');
+        }
+
+        if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+            throw new BadRequestException('Invalid phone number.');
+        }
+
+        const appointment = await this.prisma.appointment.findFirst({
+            where: {
+                bookingReference,
+                patient: {
+                    is: {
+                        phone,
+                    },
+                },
+                status: {
+                    in: ['PENDING', 'CONFIRMED'],
+                },
+                startAt: {
+                    gt: new Date(),
+                },
+            },
+            select: {
+                id: true,
+                patientId: true,
+                bookingReference: true,
+                startAt: true,
+                endAt: true,
+                status: true,
+                doctor: {
+                    select: {
+                        fullName: true,
+                        specialization: true,
+                    },
+                },
+            },
+        });
+
+        // Do not reveal whether a reference or phone number was incorrect.
+        if (!appointment) {
+            throw new NotFoundException(
+                'Unable to verify this appointment. Please check your booking reference and registered mobile number, or contact reception.',
+            );
+        }
+
+        const token = generateCancellationToken();
+        const tokenHash = hashCancellationToken(token);
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+        await this.prisma.voiceCancellationSession.upsert({
+            where: { callId },
+            create: {
+                callId,
+                appointmentId: appointment.id,
+                patientId: appointment.patientId,
+                tokenHash,
+                expiresAt,
+            },
+            update: {
+                appointmentId: appointment.id,
+                patientId: appointment.patientId,
+                tokenHash,
+                status: 'ACTIVE',
+                expiresAt,
+            },
+        });
+
+        return {
+            verified: true,
+            cancellationToken: token,
+            doctor: appointment.doctor.fullName,
+            specialization: appointment.doctor.specialization,
+            startAt: appointment.startAt.toISOString(),
+            endAt: appointment.endAt.toISOString(),
+            status: appointment.status,
+            message:
+                'Appointment verified. Read the appointment details to the patient and ask for explicit confirmation before cancelling.',
+        };
+    }
+
+    // cancel appointment
+    private async cancelAppointment(
+        args: Record<string, unknown>,
+        callId: string,
+    ) {
+        const token = this.getRequiredString(
+            args,
+            'cancellationToken',
+            64,
+        );
+
+        if (!/^[a-f0-9]{64}$/i.test(token)) {
+            throw new BadRequestException('Invalid cancellation request.');
+        }
+
+        if (args.patientConfirmed !== true) {
+            throw new BadRequestException(
+                'Explicit patient confirmation is required.',
+            );
+        }
+
+        const cancellationReason =
+            typeof args.cancellationReason === 'string'
+                ? args.cancellationReason.trim().slice(0, 300)
+                : undefined;
+
+        const tokenHash = hashCancellationToken(token);
+        const now = new Date();
+
+        const result = await this.prisma.$transaction(async (tx) => {
+            const session = await tx.voiceCancellationSession.findUnique({
+                where: { tokenHash },
+            });
+
+            if (
+                !session ||
+                session.callId !== callId ||
+                session.status !== 'ACTIVE' ||
+                session.expiresAt <= now
+            ) {
+                throw new BadRequestException(
+                    'Cancellation verification has expired. Please verify your appointment again.',
+                );
+            }
+
+            // Conditionally cancel only a future, active appointment.
+            const update = await tx.appointment.updateMany({
+                where: {
+                    id: session.appointmentId,
+                    patientId: session.patientId,
+                    status: {
+                        in: ['PENDING', 'CONFIRMED'],
+                    },
+                    startAt: {
+                        gt: now,
+                    },
+                },
+                data: {
+                    status: 'CANCELLED',
+                    cancelledAt: now,
+                    ...(cancellationReason
+                        ? { cancellationReason }
+                        : {}),
+                },
+            });
+
+            if (update.count !== 1) {
+                throw new ConflictException(
+                    'This appointment can no longer be cancelled. Please contact reception.',
+                );
+            }
+
+            await tx.voiceCancellationSession.update({
+                where: { id: session.id },
+                data: { status: 'CANCELLED' },
+            });
+
+            return tx.appointment.findUnique({
+                where: { id: session.appointmentId },
+                select: {
+                    bookingReference: true,
+                    startAt: true,
+                    status: true,
+                    doctor: {
+                        select: {
+                            fullName: true,
+                            specialization: true,
+                        },
+                    },
+                },
+            });
+        });
+
+        if (!result) {
+            throw new ConflictException('Unable to complete cancellation.');
+        }
+
+        return {
+            cancelled: true,
+            bookingReference: result.bookingReference,
+            doctor: result.doctor.fullName,
+            specialization: result.doctor.specialization,
+            startAt: result.startAt.toISOString(),
+            message: 'Your appointment has been successfully cancelled.',
+        };
     }
 
     // REQUIRED STRING VALIDATION

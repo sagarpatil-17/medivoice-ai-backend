@@ -20,6 +20,7 @@ import { CreateAppointmentDto } from './dto/create-appointment.dto.js';
 import { QueryAppointmentDto } from './dto/query-appointment.dto.js';
 import { RescheduleAppointmentDto } from './dto/reschedule-appointment.dto.js';
 import { CancelAppointmentDto } from './dto/cancel-appointment.dto.js';
+import { generateBookingReference } from './utils/booking-reference.util.js';
 
 const HOSPITAL_OFFSET = '+05:30';
 const HOSPITAL_TIMEZONE = 'Asia/Kolkata';
@@ -1319,6 +1320,7 @@ export class AppointmentsService {
                         bookingSource: BookingSource.VOICE_AI,
                         reason: input.reason?.trim() || undefined,
                         idempotencyKey: input.idempotencyKey,
+                        bookingReference: generateBookingReference(),
                     },
                     include: {
                         doctor: {
