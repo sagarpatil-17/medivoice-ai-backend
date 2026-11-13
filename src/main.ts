@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import basicAuth from 'express-basic-auth';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -12,13 +13,14 @@ async function bootstrap() {
   const swaggerPassword = configService.getOrThrow<string>('SWAGGER_PASSWORD');
 
   app.setGlobalPrefix('api');
+  app.use(cookieParser());
+
   app.enableCors({
     origin: true,
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
-
 
   app.useGlobalPipes(
     new ValidationPipe({

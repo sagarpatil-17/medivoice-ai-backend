@@ -130,8 +130,10 @@ export class AuthService {
             throw new UnauthorizedException('Refresh token missing');
         }
 
+        // 1. Hash incoming refresh token
         const refreshTokenHash = this.hashRefreshToken(rawRefreshToken);
 
+        // 2. Find existing session
         const existingSession = await this.prisma.userSession.findUnique({
             where: { refreshTokenHash },
             include: { user: true },
@@ -141,23 +143,29 @@ export class AuthService {
             throw new UnauthorizedException('Invalid refresh token');
         }
 
-        // Detect reuse of an already-revoked refresh token.
+        const now = new Date();
+
+        // 3. Detect refresh-token reuse
         if (existingSession.revokedAt) {
             await this.prisma.userSession.updateMany({
                 where: {
                     userId: existingSession.userId,
-                    revokedAt: null,
+                    OR: [
+                        { revokedAt: null },
+                        { revokedAt: { isSet: false } },
+                    ],
                 },
                 data: {
-                    revokedAt: new Date(),
+                    revokedAt: now,
                 },
             });
 
             throw new UnauthorizedException('Refresh token reuse detected');
         }
 
+        // 4. Check expiry and account status
         if (
-            existingSession.expiresAt <= new Date() ||
+            existingSession.expiresAt <= now ||
             !existingSession.user.isActive
         ) {
             throw new UnauthorizedException(
@@ -165,22 +173,26 @@ export class AuthService {
             );
         }
 
+        // 5. Generate replacement refresh token
         const newRefreshToken = this.generateRefreshToken();
         const newRefreshTokenHash = this.hashRefreshToken(newRefreshToken);
-        const now = new Date();
 
         const newExpiresAt = new Date(
-            now.getTime() + REFRESH_COOKIE_TTL_DAYS * 24 * 60 * 60 * 1000,
+            now.getTime() +
+            REFRESH_COOKIE_TTL_DAYS * 24 * 60 * 60 * 1000,
         );
 
         try {
+            // 6. Atomically revoke old session and create replacement
             await this.prisma.$transaction(async (tx) => {
-                // Atomically claim the old refresh token.
                 const claimed = await tx.userSession.updateMany({
                     where: {
                         id: existingSession.id,
-                        revokedAt: null,
                         expiresAt: { gt: now },
+                        OR: [
+                            { revokedAt: null },
+                            { revokedAt: { isSet: false } },
+                        ],
                     },
                     data: {
                         revokedAt: now,
@@ -188,11 +200,12 @@ export class AuthService {
                     },
                 });
 
+                // Another request may already have rotated this token
                 if (claimed.count !== 1) {
                     throw new RotationConflictError();
                 }
 
-                // Create replacement refresh-token session.
+                // Create new refresh-token session
                 const replacement = await tx.userSession.create({
                     data: {
                         userId: existingSession.userId,
@@ -204,7 +217,7 @@ export class AuthService {
                     },
                 });
 
-                // Maintain the token rotation history.
+                // Link old session to replacement session
                 await tx.userSession.update({
                     where: { id: existingSession.id },
                     data: {
@@ -214,12 +227,14 @@ export class AuthService {
             });
         } catch (error) {
             if (error instanceof RotationConflictError) {
-                // Another request already rotated this token.
-                // Revoke all active sessions for this user.
+                // Revoke all remaining active sessions for this user
                 await this.prisma.userSession.updateMany({
                     where: {
                         userId: existingSession.userId,
-                        revokedAt: null,
+                        OR: [
+                            { revokedAt: null },
+                            { revokedAt: { isSet: false } },
+                        ],
                     },
                     data: {
                         revokedAt: new Date(),
@@ -232,6 +247,7 @@ export class AuthService {
             throw error;
         }
 
+        // 7. Generate new access token
         const payload: JwtPayload = {
             sub: existingSession.user.id,
             email: existingSession.user.email,
@@ -240,6 +256,7 @@ export class AuthService {
 
         const accessToken = await this.generateAccessToken(payload);
 
+        // 8. Return new tokens
         return {
             accessToken,
             refreshToken: newRefreshToken,
