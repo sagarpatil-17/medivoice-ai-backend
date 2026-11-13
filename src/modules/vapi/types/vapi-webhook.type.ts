@@ -8,44 +8,69 @@ export interface VapiToolCall {
     };
 }
 
+export interface VapiCustomer {
+    number?: string;
+    name?: string;
+}
+
 export interface VapiCall {
     id?: string;
+    type?: string;
+    status?: string;
     startedAt?: string;
     endedAt?: string;
-    type?: string;
+    endedReason?: string;
+    customer?: VapiCustomer;
+    [key: string]: unknown;
+}
+
+export interface VapiRecording {
+    url?: string;
+    mono?: string;
+    stereo?: string;
+    [key: string]: unknown;
+}
+
+export interface VapiArtifact {
+    transcript?: string;
+    recording?: VapiRecording | string | null;
+    recordingUrl?: string;
+    stereoRecordingUrl?: string;
+    messages?: unknown[];
+}
+
+export interface VapiAnalysis {
+    summary?: string;
+    structuredData?: Record<string, unknown>;
+    successEvaluation?: string;
 }
 
 export interface VapiServerMessage {
     type: string;
-
     call?: VapiCall;
 
-    // Tool calls
+    phoneNumber?: string;
+    status?: string;
+    timestamp?: string;
+
     toolCallList?: VapiToolCall[];
 
-    // Status updates
-    status?: string;
-
-    // End-of-call report
-    endedReason?: string;
     startedAt?: string;
     endedAt?: string;
+    endedReason?: string;
 
-    // Transcript
     transcript?: string;
     transcriptType?: string;
     role?: string;
 
-    // End-of-call artifacts
-    artifact?: {
-        transcript?: string;
-        recording?: unknown;
-        messages?: unknown[];
-    };
-
-    // Optional summary
     summary?: string;
-    analysis?: unknown;
+    analysis?: VapiAnalysis;
+    artifact?: VapiArtifact;
+
+    recordingUrl?: string;
+    stereoRecordingUrl?: string;
+
+    [key: string]: unknown;
 }
 
 export interface VapiWebhookBody {
@@ -53,7 +78,7 @@ export interface VapiWebhookBody {
 }
 
 export interface VapiToolResult {
-    name: string;
+    name?: string;
     toolCallId: string;
     result?: string;
     error?: string;
