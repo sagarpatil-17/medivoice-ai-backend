@@ -1,4 +1,3 @@
-
 import {
     BadRequestException,
     ConflictException,
@@ -1165,12 +1164,23 @@ export class AppointmentsService {
         idempotencyKey: string;
         reason?: string;
     }) {
+        const appointmentInclude = {
+            doctor: {
+                select: {
+                    id: true,
+                    fullName: true,
+                    specialization: true,
+                },
+            },
+        };
+
         this.validateId(input.patientId);
         this.validateId(input.doctorId);
 
         // Idempotency: return the existing appointment on webhook retry.
         const existing = await this.prisma.appointment.findUnique({
             where: { idempotencyKey: input.idempotencyKey },
+            include: appointmentInclude,
         });
 
         if (existing) {
@@ -1292,6 +1302,7 @@ export class AppointmentsService {
                 // Check idempotency again inside the transaction.
                 const duplicate = await tx.appointment.findUnique({
                     where: { idempotencyKey: input.idempotencyKey },
+                    include: appointmentInclude,
                 });
 
                 if (duplicate) {
@@ -1324,6 +1335,7 @@ export class AppointmentsService {
             // A concurrent retry may have committed the same idempotency key.
             const duplicate = await this.prisma.appointment.findUnique({
                 where: { idempotencyKey: input.idempotencyKey },
+                include: appointmentInclude,
             });
 
             if (duplicate) {

@@ -34,10 +34,7 @@ export class VapiService {
         private readonly patientsService: PatientsService,
     ) { }
 
-    // ==========================================
-    // 1. HANDLE VAPI WEBHOOK
-    // ==========================================
-
+    // HANDLE VAPI WEBHOOK
     async handleWebhook(
         body: VapiWebhookBody,
     ): Promise<VapiToolResponse> {
@@ -86,10 +83,7 @@ export class VapiService {
         };
     }
 
-    // ==========================================
-    // 2. SAFE TOOL EXECUTION
-    // ==========================================
-
+    // SAFE TOOL EXECUTION
     private async executeToolSafely(
         toolCall: VapiToolCall,
         callId: string,
@@ -139,10 +133,7 @@ export class VapiService {
         }
     }
 
-    // ==========================================
-    // 3. PARSE TOOL ARGUMENTS
-    // ==========================================
-
+    // PARSE TOOL ARGUMENTS
     private parseToolArguments(
         argumentsValue: unknown,
     ): Record<string, unknown> {
@@ -171,10 +162,7 @@ export class VapiService {
         return parsed as Record<string, unknown>;
     }
 
-    // ==========================================
-    // 4. TOOL DISPATCHER
-    // ==========================================
-
+    // TOOL DISPATCHER
     private async executeTool(
         name: string,
         args: Record<string, unknown>,
@@ -190,6 +178,9 @@ export class VapiService {
             case 'register_patient':
                 return this.registerPatient(args, callId);
 
+            case 'book_appointment':
+                return this.bookAppointment(args, callId);
+
             default:
                 throw new BadRequestException(
                     `Unknown Vapi tool: ${name}`,
@@ -197,10 +188,7 @@ export class VapiService {
         }
     }
 
-    // ==========================================
-    // 5. FIND DOCTORS USING RAG
-    // ==========================================
-
+    // FIND DOCTORS USING RAG
     private async findDoctors(
         args: Record<string, unknown>,
     ) {
@@ -226,10 +214,7 @@ export class VapiService {
         return result;
     }
 
-    // ==========================================
-    // 6. CHECK APPOINTMENT AVAILABILITY
-    // ==========================================
-
+    // CHECK APPOINTMENT AVAILABILITY
     private async checkAvailability(
         args: Record<string, unknown>,
     ) {
@@ -266,10 +251,7 @@ export class VapiService {
         return availability;
     }
 
-    // ==========================================
-    // 7. REGISTER PATIENT THROUGH VOICE
-    // ==========================================
-
+    // REGISTER PATIENT THROUGH VOICE
     private async registerPatient(
         args: Record<string, unknown>,
         callId: string,
@@ -358,10 +340,158 @@ export class VapiService {
         };
     }
 
-    // ==========================================
-    // 8. REQUIRED STRING VALIDATION
-    // ==========================================
+    // book appointment
+    private async bookAppointment(
+        args: Record<string, unknown>,
+        callId: string,
+    ) {
+        const doctorId = this.getRequiredString(args, 'doctorId', 24);
+        const startAt = this.getRequiredString(args, 'startAt', 40);
 
+        if (!/^[a-fA-F0-9]{24}$/.test(doctorId)) {
+            throw new BadRequestException('Invalid doctor ID.');
+        }
+
+        if (args.patientConfirmed !== true) {
+            throw new BadRequestException(
+                'Patient confirmation is required before booking.',
+            );
+        }
+
+        const reason =
+            typeof args.reason === 'string'
+                ? args.reason.trim().slice(0, 300)
+                : undefined;
+
+        const session = await this.prisma.voiceBookingSession.findUnique({
+            where: { callId },
+        });
+
+        if (!session) {
+            throw new BadRequestException(
+                'Please complete patient registration before booking.',
+            );
+        }
+
+        if (session.status === 'BOOKED') {
+            return {
+                booked: true,
+                message: 'An appointment has already been booked during this call.',
+                appointmentId: session.appointmentId,
+            };
+        }
+
+        if (
+            session.status === 'EXPIRED' ||
+            session.expiresAt <= new Date()
+        ) {
+            throw new BadRequestException(
+                'Your booking session has expired. Please contact reception.',
+            );
+        }
+
+        if (session.status === 'BOOKING') {
+            throw new BadRequestException(
+                'Your appointment booking is already being processed.',
+            );
+        }
+
+        // Atomically claim the session so parallel calls cannot book twice.
+        const claim = await this.prisma.voiceBookingSession.updateMany({
+            where: {
+                id: session.id,
+                status: 'ACTIVE',
+                expiresAt: { gt: new Date() },
+            },
+            data: {
+                status: 'BOOKING',
+            },
+        });
+
+        if (claim.count !== 1) {
+            throw new BadRequestException(
+                'Your booking request is already being processed. Please wait.',
+            );
+        }
+
+        try {
+            const appointment = await this.appointmentsService.createFromVoice({
+                patientId: session.patientId,
+                doctorId,
+                startAt,
+                idempotencyKey: `vapi:${callId}`,
+                reason,
+            });
+
+            await this.prisma.voiceBookingSession.update({
+                where: { id: session.id },
+                data: {
+                    status: 'BOOKED',
+                    appointmentId: appointment.id,
+                },
+            });
+
+            this.logger.log(
+                `[VOICE APPOINTMENT BOOKED] Call ID: ${callId}`,
+            );
+
+            return {
+                booked: true,
+                appointmentId: appointment.id,
+                doctor: appointment.doctor?.fullName,
+                specialization: appointment.doctor?.specialization,
+                startAt: appointment.startAt.toISOString(),
+                endAt: appointment.endAt.toISOString(),
+                message: 'Appointment successfully booked.',
+            };
+        } catch (error) {
+            // Allow retry if booking failed before an appointment was committed.
+            const existingAppointment =
+                await this.prisma.appointment.findUnique({
+                    where: { idempotencyKey: `vapi:${callId}` },
+                    include: {
+                        doctor: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                specialization: true,
+                            },
+                        },
+                    },
+                });
+
+            if (existingAppointment) {
+                await this.prisma.voiceBookingSession.update({
+                    where: { id: session.id },
+                    data: {
+                        status: 'BOOKED',
+                        appointmentId: existingAppointment.id,
+                    },
+                });
+
+                return {
+                    booked: true,
+                    appointmentId: existingAppointment.id,
+                    startAt: existingAppointment.startAt.toISOString(),
+                    message: 'Appointment successfully booked.',
+                };
+            }
+
+            await this.prisma.voiceBookingSession.updateMany({
+                where: {
+                    id: session.id,
+                    status: 'BOOKING',
+                },
+                data: {
+                    status: 'ACTIVE',
+                },
+            });
+
+            throw error;
+        }
+    }
+
+    // REQUIRED STRING VALIDATION
     private getRequiredString(
         args: Record<string, unknown>,
         key: string,
@@ -382,10 +512,7 @@ export class VapiService {
         return value.trim();
     }
 
-    // ==========================================
-    // 9. DATE VALIDATION
-    // ==========================================
-
+    // DATE VALIDATION
     private validateDate(date: string): void {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
             throw new BadRequestException(
@@ -412,10 +539,7 @@ export class VapiService {
         }
     }
 
-    // ==========================================
-    // 10. SAFE ERROR MESSAGES
-    // ==========================================
-
+    // SAFE ERROR MESSAGES
     private getSafeErrorMessage(
         error: unknown,
     ): string {
