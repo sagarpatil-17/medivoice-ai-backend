@@ -1,29 +1,27 @@
 
 import {
     BadRequestException,
+    HttpException,
     Injectable,
+    InternalServerErrorException,
     Logger,
 } from '@nestjs/common';
 
 import { PrismaService } from '../../database/prisma.service.js';
 import { AppointmentsService } from '../appointments/appointments.service.js';
+import { DoctorKnowledgeService } from '../doctor-knowledge/doctor-knowledge.service.js';
+import { PatientsService } from '../patients/patients.service.js';
 
+import { RegisterPatientDto } from './dto/register-patient.dto.js';
 import {
+    VapiWebhookBody,
     VapiToolCall,
     VapiToolResult,
-    VapiWebhookBody,
+    VapiToolResponse,
 } from './types/vapi-webhook.type.js';
-import { DoctorKnowledgeService } from '../doctor-knowledge/doctor-knowledge.service.js';
 
-type FindDoctorsArgs = {
-    specialization?: string;
-    departmentName?: string;
-};
-
-type CheckAvailabilityArgs = {
-    doctorId: string;
-    date: string;
-};
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 
 @Injectable()
 export class VapiService {
@@ -33,43 +31,53 @@ export class VapiService {
         private readonly prisma: PrismaService,
         private readonly appointmentsService: AppointmentsService,
         private readonly doctorKnowledgeService: DoctorKnowledgeService,
+        private readonly patientsService: PatientsService,
     ) { }
 
-    // -------------------------------------------------------
-    // MAIN WEBHOOK HANDLER
-    // -------------------------------------------------------
+    // ==========================================
+    // 1. HANDLE VAPI WEBHOOK
+    // ==========================================
 
-    async handleWebhook(body: VapiWebhookBody) {
-        console.log('[VAPI WEBHOOK RECEIVED]', {
-            type: body.message?.type,
-            callId: body.message?.call?.id,
-            toolNames: body.message?.toolCallList?.map(
-                (tool) => tool.function.name,
-            ),
-            timestamp: new Date().toISOString(),
-        });
-
+    async handleWebhook(
+        body: VapiWebhookBody,
+    ): Promise<VapiToolResponse> {
         const message = body?.message;
 
-        if (!message?.type) {
-            return {
-                results: [],
-            };
+        if (!message) {
+            throw new BadRequestException(
+                'Invalid Vapi webhook payload.',
+            );
         }
 
-        // This endpoint is intended for Function tool calls.
-        // Other call lifecycle events will be handled separately.
+        this.logger.log(
+            `[VAPI WEBHOOK RECEIVED] Type: ${message.type}`,
+        );
+
+        // Handle only function tool calls here.
         if (message.type !== 'tool-calls') {
             return {
                 results: [],
             };
         }
 
-        const toolCalls = message.toolCallList ?? [];
+        const toolCallList = message.toolCallList ?? [];
+        const callId = message.call?.id;
+
+        if (!callId) {
+            throw new BadRequestException(
+                'Missing Vapi call ID.',
+            );
+        }
+
+        this.logger.log(
+            `[VAPI TOOL CALLS] Call ID: ${callId}, Tools: ${toolCallList
+                .map((tool) => tool.function.name)
+                .join(', ')}`,
+        );
 
         const results = await Promise.all(
-            toolCalls.map((toolCall) =>
-                this.executeToolSafely(toolCall),
+            toolCallList.map((toolCall) =>
+                this.executeToolSafely(toolCall, callId),
             ),
         );
 
@@ -78,37 +86,41 @@ export class VapiService {
         };
     }
 
-    // -------------------------------------------------------
-    // TOOL EXECUTION
-    // -------------------------------------------------------
+    // ==========================================
+    // 2. SAFE TOOL EXECUTION
+    // ==========================================
 
     private async executeToolSafely(
         toolCall: VapiToolCall,
+        callId: string,
     ): Promise<VapiToolResult> {
-        const toolCallId = toolCall?.id;
-        const toolName = toolCall?.function?.name;
-
-        if (!toolCallId || !toolName) {
-            return {
-                name: toolName ?? 'unknown',
-                toolCallId: toolCallId ?? 'unknown',
-                error: 'Invalid tool call.',
-            };
-        }
+        const toolName = toolCall.function.name;
 
         try {
-            const args = this.parseArguments(
+            const args = this.parseToolArguments(
                 toolCall.function.arguments,
             );
+
+            this.logger.log(
+                `[VAPI TOOL STARTED] ${toolName}`,
+            );
+
+            const startTime = Date.now();
 
             const result = await this.executeTool(
                 toolName,
                 args,
+                callId,
+            );
+
+            this.logger.log(
+                `[VAPI TOOL COMPLETED] ${toolName} - ${Date.now() - startTime
+                }ms`,
             );
 
             return {
                 name: toolName,
-                toolCallId,
+                toolCallId: toolCall.id,
                 result: JSON.stringify(result),
             };
         } catch (error) {
@@ -121,23 +133,27 @@ export class VapiService {
 
             return {
                 name: toolName,
-                toolCallId,
+                toolCallId: toolCall.id,
                 error: this.getSafeErrorMessage(error),
             };
         }
     }
 
-    private parseArguments(
+    // ==========================================
+    // 3. PARSE TOOL ARGUMENTS
+    // ==========================================
+
+    private parseToolArguments(
         argumentsValue: unknown,
     ): Record<string, unknown> {
-        let parsed: unknown = argumentsValue;
+        let parsed = argumentsValue;
 
-        if (typeof argumentsValue === 'string') {
+        if (typeof parsed === 'string') {
             try {
-                parsed = JSON.parse(argumentsValue);
+                parsed = JSON.parse(parsed);
             } catch {
-                throw new Error(
-                    'Tool arguments must be valid JSON.',
+                throw new BadRequestException(
+                    'Invalid tool arguments JSON.',
                 );
             }
         }
@@ -147,46 +163,216 @@ export class VapiService {
             typeof parsed !== 'object' ||
             Array.isArray(parsed)
         ) {
-            throw new Error(
-                'Tool arguments must be a JSON object.',
+            throw new BadRequestException(
+                'Tool arguments must be a valid object.',
             );
         }
 
         return parsed as Record<string, unknown>;
     }
 
+    // ==========================================
+    // 4. TOOL DISPATCHER
+    // ==========================================
+
     private async executeTool(
         name: string,
         args: Record<string, unknown>,
+        callId: string,
     ): Promise<unknown> {
         switch (name) {
             case 'find_doctors':
-                return this.doctorKnowledgeService.findDoctorsByQuery(
-                    this.getRequiredString(args, 'query'),
-                );
+                return this.findDoctors(args);
 
             case 'check_availability':
-                return this.checkAvailability(
-                    args as CheckAvailabilityArgs,
-                );
+                return this.checkAvailability(args);
+
+            case 'register_patient':
+                return this.registerPatient(args, callId);
 
             default:
-                throw new Error(
-                    `Unsupported tool: ${name}`,
+                throw new BadRequestException(
+                    `Unknown Vapi tool: ${name}`,
                 );
         }
     }
 
+    // ==========================================
+    // 5. FIND DOCTORS USING RAG
+    // ==========================================
+
+    private async findDoctors(
+        args: Record<string, unknown>,
+    ) {
+        const query = this.getRequiredString(
+            args,
+            'query',
+            300,
+        );
+
+        this.logger.log(
+            `[RAG SEARCH] Query: ${query}`,
+        );
+
+        const result =
+            await this.doctorKnowledgeService.findDoctorsByQuery(
+                query,
+            );
+
+        this.logger.log(
+            `[RAG SEARCH COMPLETED] Matched: ${result.matched}`,
+        );
+
+        return result;
+    }
+
+    // ==========================================
+    // 6. CHECK APPOINTMENT AVAILABILITY
+    // ==========================================
+
+    private async checkAvailability(
+        args: Record<string, unknown>,
+    ) {
+        const doctorId = this.getRequiredString(
+            args,
+            'doctorId',
+            24,
+        );
+
+        const date = this.getRequiredString(
+            args,
+            'date',
+            10,
+        );
+
+        if (!/^[a-fA-F0-9]{24}$/.test(doctorId)) {
+            throw new BadRequestException(
+                'Invalid doctor ID.',
+            );
+        }
+
+        this.validateDate(date);
+
+        this.logger.log(
+            `[AVAILABILITY CHECK] Doctor: ${doctorId}, Date: ${date}`,
+        );
+
+        const availability =
+            await this.appointmentsService.checkAvailability({
+                doctorId,
+                date,
+            });
+
+        return availability;
+    }
+
+    // ==========================================
+    // 7. REGISTER PATIENT THROUGH VOICE
+    // ==========================================
+
+    private async registerPatient(
+        args: Record<string, unknown>,
+        callId: string,
+    ) {
+        // Check whether this Vapi call already has a session.
+        const existingSession =
+            await this.prisma.voiceBookingSession.findUnique({
+                where: {
+                    callId,
+                },
+            });
+
+        if (existingSession) {
+            if (
+                existingSession.status !== 'ACTIVE' ||
+                existingSession.expiresAt <= new Date()
+            ) {
+                throw new BadRequestException(
+                    'This booking session is no longer active.',
+                );
+            }
+
+            return {
+                registered: true,
+                message:
+                    'Patient is already registered for this call.',
+                sessionExpiresAt:
+                    existingSession.expiresAt.toISOString(),
+            };
+        }
+
+        // Validate incoming patient information.
+        const dto = plainToInstance(
+            RegisterPatientDto,
+            args,
+        );
+
+        const errors = await validate(dto, {
+            whitelist: true,
+            forbidNonWhitelisted: true,
+        });
+
+        if (errors.length > 0) {
+            throw new BadRequestException(
+                'Please provide a valid patient name and mobile number.',
+            );
+        }
+
+        // Register a new patient.
+        const registration =
+            await this.patientsService.registerFromVoice(dto);
+
+        // Existing matching patient.
+        // Do not expose their patient ID or personal details.
+        if (
+            !registration.registered ||
+            !registration.patient
+        ) {
+            return registration;
+        }
+
+        // Create a 30-minute voice booking session.
+        const expiresAt = new Date(
+            Date.now() + 30 * 60 * 1000,
+        );
+
+        const session =
+            await this.prisma.voiceBookingSession.create({
+                data: {
+                    callId,
+                    patientId: registration.patient.id,
+                    expiresAt,
+                },
+            });
+
+        this.logger.log(
+            `[VOICE BOOKING SESSION CREATED] Call ID: ${callId}`,
+        );
+
+        return {
+            registered: true,
+            message:
+                'Patient registered and booking session created.',
+            sessionExpiresAt:
+                session.expiresAt.toISOString(),
+        };
+    }
+
+    // ==========================================
+    // 8. REQUIRED STRING VALIDATION
+    // ==========================================
+
     private getRequiredString(
         args: Record<string, unknown>,
         key: string,
+        maxLength = 300,
     ): string {
         const value = args[key];
 
         if (
             typeof value !== 'string' ||
             value.trim().length < 2 ||
-            value.trim().length > 300
+            value.trim().length > maxLength
         ) {
             throw new BadRequestException(
                 `Invalid ${key} parameter.`,
@@ -196,190 +382,76 @@ export class VapiService {
         return value.trim();
     }
 
-    private getSafeErrorMessage(error: unknown): string {
-        if (error instanceof Error) {
-            // Do not expose database or internal server details.
-            if (
-                error.name === 'BadRequestException' ||
-                error.name === 'NotFoundException' ||
-                error.name === 'ConflictException'
-            ) {
-                return error.message;
-            }
-        }
+    // ==========================================
+    // 9. DATE VALIDATION
+    // ==========================================
 
-        return 'The requested operation could not be completed. Please try again.';
-    }
-
-    // -------------------------------------------------------
-    // TOOL 1: FIND DOCTORS
-    // -------------------------------------------------------
-
-    private async findDoctors(
-        args: FindDoctorsArgs,
-    ) {
-        const specialization =
-            this.validateOptionalText(
-                args.specialization,
-                'specialization',
-            );
-
-        const departmentName =
-            this.validateOptionalText(
-                args.departmentName,
-                'departmentName',
-            );
-
-        const doctors =
-            await this.prisma.doctor.findMany({
-                where: {
-                    isActive: true,
-
-                    user: {
-                        is: {
-                            isActive: true,
-                        },
-                    },
-
-                    department: {
-                        is: {
-                            isActive: true,
-
-                            ...(departmentName && {
-                                name: {
-                                    contains: departmentName,
-                                },
-                            }),
-                        },
-                    },
-
-                    ...(specialization && {
-                        specialization: {
-                            contains: specialization,
-                        },
-                    }),
-                },
-
-                select: {
-                    id: true,
-                    fullName: true,
-                    specialization: true,
-                    qualification: true,
-                    experienceYears: true,
-                    consultationFee: true,
-
-                    department: {
-                        select: {
-                            id: true,
-                            name: true,
-                        },
-                    },
-                },
-
-                orderBy: {
-                    fullName: 'asc',
-                },
-
-                take: 10,
-            });
-
-        return {
-            count: doctors.length,
-            doctors: doctors.map((doctor) => ({
-                id: doctor.id,
-                name: doctor.fullName,
-                specialization: doctor.specialization,
-                qualification: doctor.qualification,
-                experienceYears: doctor.experienceYears,
-                consultationFee:
-                    doctor.consultationFee / 100,
-                currency: 'INR',
-                department: doctor.department.name,
-            })),
-        };
-    }
-
-    // -------------------------------------------------------
-    // TOOL 2: CHECK AVAILABILITY
-    // -------------------------------------------------------
-
-    private async checkAvailability(
-        args: CheckAvailabilityArgs,
-    ) {
-        const doctorId = args.doctorId;
-        const date = args.date;
-
-        if (
-            typeof doctorId !== 'string' ||
-            !/^[a-fA-F0-9]{24}$/.test(doctorId)
-        ) {
-            throw new Error(
-                'A valid doctor ID is required.',
-            );
-        }
-
-        if (
-            typeof date !== 'string' ||
-            !/^\d{4}-\d{2}-\d{2}$/.test(date)
-        ) {
-            throw new Error(
+    private validateDate(date: string): void {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            throw new BadRequestException(
                 'Date must use YYYY-MM-DD format.',
             );
         }
 
-        const availability =
-            await this.appointmentsService.checkAvailability({
-                doctorId,
-                date,
-            });
+        const [year, month, day] = date
+            .split('-')
+            .map(Number);
 
-        return {
-            doctor: {
-                id: availability.doctor.id,
-                name: availability.doctor.fullName,
-                specialization:
-                    availability.doctor.specialization,
-                department:
-                    availability.doctor.department.name,
-            },
-
-            date: availability.date,
-            timezone: availability.timezone,
-
-            availableCount:
-                availability.availableCount,
-
-            slots: availability.slots
-                .filter((slot) => slot.available)
-                .map((slot) => ({
-                    startAt: slot.startAt,
-                    endAt: slot.endAt,
-                })),
-        };
-    }
-
-    // -------------------------------------------------------
-    // INPUT VALIDATION
-    // -------------------------------------------------------
-
-    private validateOptionalText(
-        value: unknown,
-        fieldName: string,
-    ): string | undefined {
-        if (value === undefined || value === null || value === '') {
-            return undefined;
-        }
+        const parsedDate = new Date(
+            Date.UTC(year, month - 1, day),
+        );
 
         if (
-            typeof value !== 'string' ||
-            value.trim().length === 0 ||
-            value.length > 100
+            parsedDate.getUTCFullYear() !== year ||
+            parsedDate.getUTCMonth() !== month - 1 ||
+            parsedDate.getUTCDate() !== day
         ) {
-            throw new Error(
-                `Invalid ${fieldName}.`,
+            throw new BadRequestException(
+                'Invalid calendar date.',
             );
         }
+    }
 
-        return value.trim();
+    // ==========================================
+    // 10. SAFE ERROR MESSAGES
+    // ==========================================
+
+    private getSafeErrorMessage(
+        error: unknown,
+    ): string {
+        if (error instanceof HttpException) {
+            if (error.getStatus() < 500) {
+                const response = error.getResponse();
+
+                if (typeof response === 'string') {
+                    return response;
+                }
+
+                if (
+                    typeof response === 'object' &&
+                    response !== null &&
+                    'message' in response
+                ) {
+                    const message = response.message;
+
+                    if (typeof message === 'string') {
+                        return message;
+                    }
+
+                    if (
+                        Array.isArray(message) &&
+                        message.every(
+                            (item) => typeof item === 'string',
+                        )
+                    ) {
+                        return message.join(', ');
+                    }
+                }
+
+                return error.message;
+            }
+        }
+
+        return 'Sorry, the requested operation is temporarily unavailable. Please try again.';
     }
 }

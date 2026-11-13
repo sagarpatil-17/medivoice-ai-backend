@@ -13,6 +13,7 @@ import { LookupPatientDto } from './dto/lookup-patient.dto.js';
 import { QueryPatientDto } from './dto/query-patient.dto.js';
 import { UpdatePatientDto } from './dto/update-patient.dto.js';
 import { VerifyPatientDto } from './dto/verify-patient.dto.js';
+import { RegisterPatientDto } from '../vapi/dto/register-patient.dto.js';
 
 
 @Injectable()
@@ -288,4 +289,67 @@ export class PatientsService {
             appointments,
         };
     }
+
+
+    async registerFromVoice(dto: RegisterPatientDto) {
+        const firstName = dto.firstName.trim();
+        const lastName = dto.lastName.trim();
+        const phone = dto.phone.trim();
+
+        // Check for an existing patient with the same
+        // phone number and name.
+        const phoneMatches = await this.prisma.patient.findMany({
+            where: { phone },
+            select: {
+                firstName: true,
+                lastName: true,
+            },
+            take: 50,
+        });
+
+        const existingPatient = phoneMatches.some(
+            (patient) =>
+                patient.firstName.trim().toLowerCase() ===
+                firstName.toLowerCase() &&
+                patient.lastName.trim().toLowerCase() ===
+                lastName.toLowerCase(),
+        );
+
+        if (existingPatient) {
+            return {
+                registered: false,
+                existingPatient: true,
+                requiresReceptionist: true,
+                message:
+                    'A patient with these details may already be registered. Please contact hospital reception for assistance.',
+            };
+        }
+
+        const patient = await this.prisma.patient.create({
+            data: {
+                firstName,
+                lastName,
+                phone,
+                ...(dto.email ? { email: dto.email.toLowerCase() } : {}),
+            },
+            select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+            },
+        });
+
+        return {
+            registered: true,
+            existingPatient: false,
+            patient: {
+                id: patient.id,
+                firstName: patient.firstName,
+                lastName: patient.lastName,
+            },
+            message: 'Patient registered successfully.',
+        };
+    }
+
 }

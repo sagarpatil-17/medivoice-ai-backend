@@ -39,9 +39,7 @@ type Actor = {
 export class AppointmentsService {
     constructor(private readonly prisma: PrismaService) { }
 
-    // -------------------------------------------------------
     // VALIDATION HELPERS
-    // -------------------------------------------------------
 
     private validateId(id: string): void {
         if (!/^[a-fA-F0-9]{24}$/.test(id)) {
@@ -154,9 +152,7 @@ export class AppointmentsService {
         }
     }
 
-    // -------------------------------------------------------
     // DOCTOR HELPERS
-    // -------------------------------------------------------
 
     private async getActiveDoctor(doctorId: string) {
         this.validateId(doctorId);
@@ -220,9 +216,7 @@ export class AppointmentsService {
         }
     }
 
-    // -------------------------------------------------------
     // SCHEDULE HELPERS
-    // -------------------------------------------------------
 
     private async findMatchingSchedule(
         tx: Prisma.TransactionClient,
@@ -303,9 +297,7 @@ export class AppointmentsService {
         return schedule;
     }
 
-    // -------------------------------------------------------
     // DAY LOCK HELPERS
-    // -------------------------------------------------------
 
     private async ensureDayLock(
         doctorId: string,
@@ -376,9 +368,7 @@ export class AppointmentsService {
         });
     }
 
-    // -------------------------------------------------------
     // APPOINTMENT CONFLICT HELPER
-    // -------------------------------------------------------
 
     private async assertNoConflict(
         tx: Prisma.TransactionClient,
@@ -417,42 +407,32 @@ export class AppointmentsService {
         }
     }
 
-    // -------------------------------------------------------
     // TRANSACTION RETRY
-    // -------------------------------------------------------
 
     private async runWithTransactionRetry<T>(
-        operation: () => Promise<T>,
+        operation: (tx: Prisma.TransactionClient) => Promise<T>,
+        retries = 3,
     ): Promise<T> {
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                return await operation();
+                return await this.prisma.$transaction(
+                    async (tx) => operation(tx),
+                );
             } catch (error) {
-                const retryable =
-                    error instanceof
-                    Prisma.PrismaClientKnownRequestError &&
+                const isRetryable =
+                    error instanceof Prisma.PrismaClientKnownRequestError &&
                     error.code === 'P2034';
 
-                if (!retryable || attempt === 3) {
-                    if (retryable) {
-                        throw new ConflictException(
-                            'This slot is being booked by another request. Please check availability again.',
-                        );
-                    }
-
+                if (!isRetryable || attempt === retries) {
                     throw error;
                 }
             }
         }
 
-        throw new ConflictException(
-            'Unable to complete the appointment operation.',
-        );
+        throw new Error('Transaction failed after maximum retries.');
     }
 
-    // -------------------------------------------------------
     // 1. CHECK AVAILABLE SLOTS
-    // -------------------------------------------------------
 
     async checkAvailability(
         dto: CheckAvailabilityDto,
@@ -615,9 +595,7 @@ export class AppointmentsService {
         };
     }
 
-    // -------------------------------------------------------
     // 2. CREATE APPOINTMENT
-    // -------------------------------------------------------
 
     async create(
         dto: CreateAppointmentDto,
@@ -734,9 +712,7 @@ export class AppointmentsService {
         );
     }
 
-    // -------------------------------------------------------
     // 3. LIST APPOINTMENTS
-    // -------------------------------------------------------
 
     async findAll(query: QueryAppointmentDto) {
         const page = query.page ?? 1;
@@ -857,9 +833,7 @@ export class AppointmentsService {
         };
     }
 
-    // -------------------------------------------------------
     // 4. GET APPOINTMENT DETAILS
-    // -------------------------------------------------------
 
     async findOne(id: string) {
         this.validateId(id);
@@ -905,9 +879,7 @@ export class AppointmentsService {
         return appointment;
     }
 
-    // -------------------------------------------------------
     // 5. CANCEL APPOINTMENT
-    // -------------------------------------------------------
 
     async cancel(
         id: string,
@@ -957,9 +929,7 @@ export class AppointmentsService {
         return this.findOne(id);
     }
 
-    // -------------------------------------------------------
     // 6. RESCHEDULE APPOINTMENT
-    // -------------------------------------------------------
 
     async reschedule(
         id: string,
@@ -1110,9 +1080,7 @@ export class AppointmentsService {
         );
     }
 
-    // -------------------------------------------------------
-    // 7. COMPLETE APPOINTMENT / MARK NO-SHOW
-    // -------------------------------------------------------
+    //  COMPLETE APPOINTMENT / MARK NO-SHOW
 
     async updateStatus(
         id: string,
@@ -1187,5 +1155,182 @@ export class AppointmentsService {
         }
 
         return this.findOne(id);
+    }
+
+
+    async createFromVoice(input: {
+        patientId: string;
+        doctorId: string;
+        startAt: string;
+        idempotencyKey: string;
+        reason?: string;
+    }) {
+        this.validateId(input.patientId);
+        this.validateId(input.doctorId);
+
+        // Idempotency: return the existing appointment on webhook retry.
+        const existing = await this.prisma.appointment.findUnique({
+            where: { idempotencyKey: input.idempotencyKey },
+        });
+
+        if (existing) {
+            return existing;
+        }
+
+        const startAt = new Date(input.startAt);
+
+        if (
+            Number.isNaN(startAt.getTime()) ||
+            !/^\d{4}-\d{2}-\d{2}T/.test(input.startAt) ||
+            !/(Z|[+-]\d{2}:\d{2})$/.test(input.startAt)
+        ) {
+            throw new BadRequestException('Invalid appointment date and time.');
+        }
+
+        if (
+            startAt.getTime() <= Date.now() ||
+            startAt.getUTCSeconds() !== 0 ||
+            startAt.getUTCMilliseconds() !== 0
+        ) {
+            throw new BadRequestException('Please select a valid future appointment slot.');
+        }
+
+        // Convert UTC timestamp to hospital local time (Asia/Kolkata).
+        const localDate = new Date(startAt.getTime() + 330 * 60 * 1000);
+
+        const year = localDate.getUTCFullYear();
+        const month = localDate.getUTCMonth() + 1;
+        const day = localDate.getUTCDate();
+
+        const dateKey =
+            `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+        const dayOfWeek = new Date(
+            Date.UTC(year, month - 1, day),
+        ).getUTCDay();
+
+        const localStartMinutes =
+            localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
+
+        const doctor = await this.getActiveDoctor(input.doctorId);
+
+        const schedule = await this.prisma.doctorSchedule.findFirst({
+            where: {
+                doctorId: doctor.id,
+                dayOfWeek,
+                isActive: true,
+            },
+        });
+
+        // Check all active shifts for the doctor.
+        const schedules = await this.prisma.doctorSchedule.findMany({
+            where: {
+                doctorId: doctor.id,
+                dayOfWeek,
+                isActive: true,
+            },
+        });
+
+        const matchingSchedule = schedules.find((item) => {
+            const scheduleStart = this.toMinutes(item.startTime);
+            const scheduleEnd = this.toMinutes(item.endTime);
+            const duration = item.slotDurationMinutes;
+
+            const slotEnd = localStartMinutes + duration;
+
+            const aligned =
+                localStartMinutes >= scheduleStart &&
+                slotEnd <= scheduleEnd &&
+                (localStartMinutes - scheduleStart) % duration === 0;
+
+            const breakStart = item.breakStartTime
+                ? this.toMinutes(item.breakStartTime)
+                : null;
+
+            const breakEnd = item.breakEndTime
+                ? this.toMinutes(item.breakEndTime)
+                : null;
+
+            const overlapsBreak =
+                breakStart !== null &&
+                breakEnd !== null &&
+                localStartMinutes < breakEnd &&
+                slotEnd > breakStart;
+
+            return aligned && !overlapsBreak;
+        });
+
+        if (!matchingSchedule) {
+            throw new BadRequestException(
+                'This appointment slot is not part of the doctor schedule.',
+            );
+        }
+
+        const endAt = new Date(
+            startAt.getTime() +
+            matchingSchedule.slotDurationMinutes * 60 * 1000,
+        );
+
+        // Ensure the day lock exists before acquiring it.
+        await this.ensureDayLock(input.doctorId, dateKey);
+
+        try {
+            return await this.runWithTransactionRetry(async (tx) => {
+                await this.acquireDayLock(tx, input.doctorId, dateKey);
+
+                // Recheck doctor status inside the transaction.
+                await this.assertDoctorActive(tx, input.doctorId);
+
+                // Check overlapping active appointments.
+                await this.assertNoConflict(
+                    tx,
+                    input.doctorId,
+                    startAt,
+                    endAt,
+                );
+
+                // Check idempotency again inside the transaction.
+                const duplicate = await tx.appointment.findUnique({
+                    where: { idempotencyKey: input.idempotencyKey },
+                });
+
+                if (duplicate) {
+                    return duplicate;
+                }
+
+                return tx.appointment.create({
+                    data: {
+                        patientId: input.patientId,
+                        doctorId: input.doctorId,
+                        startAt,
+                        endAt,
+                        status: AppointmentStatus.CONFIRMED,
+                        bookingSource: BookingSource.VOICE_AI,
+                        reason: input.reason?.trim() || undefined,
+                        idempotencyKey: input.idempotencyKey,
+                    },
+                    include: {
+                        doctor: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                specialization: true,
+                            },
+                        },
+                    },
+                });
+            });
+        } catch (error) {
+            // A concurrent retry may have committed the same idempotency key.
+            const duplicate = await this.prisma.appointment.findUnique({
+                where: { idempotencyKey: input.idempotencyKey },
+            });
+
+            if (duplicate) {
+                return duplicate;
+            }
+
+            throw error;
+        }
     }
 }

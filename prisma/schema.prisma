@@ -35,6 +35,14 @@ enum BookingSource {
   PATIENT_PORTAL
 }
 
+enum VoiceBookingSessionStatus {
+  ACTIVE
+  BOOKING
+  BOOKED
+  EXPIRED
+}
+
+// MODELS 
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
   name         String
@@ -87,7 +95,8 @@ model Patient {
   address     String?
   notes       String?
 
-  appointments Appointment[]
+  appointments         Appointment[]
+  voiceBookingSessions VoiceBookingSession[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -183,6 +192,8 @@ model Appointment {
   status        AppointmentStatus @default(PENDING)
   bookingSource BookingSource     @default(VOICE_AI)
 
+  idempotencyKey String? @unique
+
   reason             String?
   cancellationReason String?
   cancelledAt        DateTime?
@@ -213,4 +224,20 @@ model DoctorKnowledge {
   updatedAt   DateTime @updatedAt
 
   @@index([isActive])
+}
+
+model VoiceBookingSession {
+  id            String                    @id @default(auto()) @map("_id") @db.ObjectId
+  callId        String                    @unique
+  patientId     String                    @db.ObjectId
+  status        VoiceBookingSessionStatus @default(ACTIVE)
+  expiresAt     DateTime
+  appointmentId String?                   @db.ObjectId
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, status])
+  @@index([expiresAt])
 }

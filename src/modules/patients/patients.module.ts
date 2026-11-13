@@ -4,6 +4,7 @@ import { PatientsService } from './patients.service.js';
 
 @Module({
   controllers: [PatientsController],
-  providers: [PatientsService]
+  providers: [PatientsService],
+  exports: [PatientsService],
 })
-export class PatientsModule {}
+export class PatientsModule { }
