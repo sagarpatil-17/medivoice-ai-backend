@@ -6,6 +6,7 @@ import { DoctorKnowledgeController } from './doctor-knowledge.controller.js';
 
 @Module({
     controllers: [DoctorKnowledgeController],
-    providers: [DoctorKnowledgeService, EmbeddingService]
+    providers: [DoctorKnowledgeService, EmbeddingService],
+    exports: [DoctorKnowledgeService]
 })
 export class DoctorKnowledgeModule { }

@@ -17,7 +17,7 @@ export class EmbeddingService {
 
     private readonly model =
         process.env.NVIDIA_EMBEDDING_MODEL ??
-        'nvidia/nv-embedqa-e5-v5';
+        'nvidia/nemotron-3.5-embed-1b';
 
     async generateEmbedding(
         text: string,
@@ -64,9 +64,9 @@ export class EmbeddingService {
 
         const embedding = result.data?.[0]?.embedding;
 
-        if (!embedding || embedding.length !== 1024) {
+        if (!embedding || embedding.length !== 2048) {
             throw new InternalServerErrorException(
-                'Invalid embedding returned by NVIDIA.',
+                `Invalid embedding dimensions. Expected 2048, received ${embedding?.length ?? 0}.`,
             );
         }
 

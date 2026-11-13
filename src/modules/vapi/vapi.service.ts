@@ -1,5 +1,6 @@
 
 import {
+    BadRequestException,
     Injectable,
     Logger,
 } from '@nestjs/common';
@@ -12,6 +13,7 @@ import {
     VapiToolResult,
     VapiWebhookBody,
 } from './types/vapi-webhook.type.js';
+import { DoctorKnowledgeService } from '../doctor-knowledge/doctor-knowledge.service.js';
 
 type FindDoctorsArgs = {
     specialization?: string;
@@ -30,6 +32,7 @@ export class VapiService {
     constructor(
         private readonly prisma: PrismaService,
         private readonly appointmentsService: AppointmentsService,
+        private readonly doctorKnowledgeService: DoctorKnowledgeService,
     ) { }
 
     // -------------------------------------------------------
@@ -158,8 +161,8 @@ export class VapiService {
     ): Promise<unknown> {
         switch (name) {
             case 'find_doctors':
-                return this.findDoctors(
-                    args as FindDoctorsArgs,
+                return this.doctorKnowledgeService.findDoctorsByQuery(
+                    this.getRequiredString(args, 'query'),
                 );
 
             case 'check_availability':
@@ -172,6 +175,25 @@ export class VapiService {
                     `Unsupported tool: ${name}`,
                 );
         }
+    }
+
+    private getRequiredString(
+        args: Record<string, unknown>,
+        key: string,
+    ): string {
+        const value = args[key];
+
+        if (
+            typeof value !== 'string' ||
+            value.trim().length < 2 ||
+            value.trim().length > 300
+        ) {
+            throw new BadRequestException(
+                `Invalid ${key} parameter.`,
+            );
+        }
+
+        return value.trim();
     }
 
     private getSafeErrorMessage(error: unknown): string {

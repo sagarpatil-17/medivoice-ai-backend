@@ -3,9 +3,10 @@ import { VapiController } from './vapi.controller.js';
 import { VapiService } from './vapi.service.js';
 import { AppointmentsModule } from '../appointments/appointments.module.js';
 import { VapiAuthGuard } from './guards/vapi-auth.guard.js';
+import { DoctorKnowledgeModule } from '../doctor-knowledge/doctor-knowledge.module.js';
 
 @Module({
-  imports: [AppointmentsModule],
+  imports: [AppointmentsModule, DoctorKnowledgeModule],
   controllers: [VapiController],
   providers: [VapiService, VapiAuthGuard]
 })
