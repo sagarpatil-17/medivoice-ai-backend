@@ -203,7 +203,7 @@ model Appointment {
 
 model DoctorKnowledge {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  specialty   String
+  specialty   String   @unique
   department  String
   description String
   synonyms    String[]
@@ -212,6 +212,5 @@ model DoctorKnowledge {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([specialty])
   @@index([isActive])
 }
