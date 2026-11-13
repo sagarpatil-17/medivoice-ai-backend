@@ -37,6 +37,15 @@ export class VapiService {
     // -------------------------------------------------------
 
     async handleWebhook(body: VapiWebhookBody) {
+        console.log('[VAPI WEBHOOK RECEIVED]', {
+            type: body.message?.type,
+            callId: body.message?.call?.id,
+            toolNames: body.message?.toolCallList?.map(
+                (tool) => tool.function.name,
+            ),
+            timestamp: new Date().toISOString(),
+        });
+
         const message = body?.message;
 
         if (!message?.type) {
