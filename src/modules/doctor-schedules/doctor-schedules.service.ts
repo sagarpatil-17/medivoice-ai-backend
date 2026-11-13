@@ -126,9 +126,9 @@ export class DoctorSchedulesService {
 
     // CREATE SCHEDULE
     async create(dto: CreateDoctorScheduleDto) {
-        // await this.validateDoctor(dto.doctorId);
+        await this.validateDoctor(dto.doctorId);
 
-        // this.validateTimes(dto);
+        this.validateTimes(dto);
 
         if (dto.isActive !== false) {
             await this.validateNoOverlap({
