@@ -42,6 +42,12 @@ enum VoiceBookingSessionStatus {
   EXPIRED
 }
 
+enum VoiceCancellationSessionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+}
+
 // MODELS 
 model User {
   id           String   @id @default(auto()) @map("_id") @db.ObjectId
@@ -181,7 +187,8 @@ model DoctorDayLock {
 }
 
 model Appointment {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
+  id               String  @id @default(auto()) @map("_id") @db.ObjectId
+  bookingReference String? @unique
 
   patientId String @db.ObjectId
   doctorId  String @db.ObjectId
@@ -204,9 +211,6 @@ model Appointment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Prevent two appointments for the same doctor
-  // at exactly the same start time.
-  @@unique([doctorId, startAt])
   @@index([patientId, startAt])
   @@index([doctorId, startAt, status])
   @@index([status, startAt])
@@ -240,4 +244,19 @@ model VoiceBookingSession {
 
   @@index([patientId, status])
   @@index([expiresAt])
+}
+
+model VoiceCancellationSession {
+  id            String                         @id @default(auto()) @map("_id") @db.ObjectId
+  callId        String                         @unique
+  appointmentId String                         @db.ObjectId
+  patientId     String                         @db.ObjectId
+  tokenHash     String                         @unique
+  status        VoiceCancellationSessionStatus @default(ACTIVE)
+  expiresAt     DateTime
+  createdAt     DateTime                       @default(now())
+  updatedAt     DateTime                       @updatedAt
+
+  @@index([expiresAt])
+  @@index([patientId, status])
 }
