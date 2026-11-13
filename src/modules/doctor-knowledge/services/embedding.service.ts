@@ -43,7 +43,7 @@ export class EmbeddingService {
                 input_type: inputType,
                 encoding_format: 'float',
             }),
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(30000),
         });
 
         if (!response.ok) {
