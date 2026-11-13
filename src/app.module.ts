@@ -10,6 +10,7 @@ import { AppointmentsModule } from './modules/appointments/appointments.module.j
 import { DashboardModule } from './modules/dashboard/dashboard.module.js';
 import { VapiModule } from './modules/vapi/vapi.module.js';
 import { DoctorKnowledgeModule } from './modules/doctor-knowledge/doctor-knowledge.module.js';
+import { CallsModule } from './modules/calls/calls.module.js';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { DoctorKnowledgeModule } from './modules/doctor-knowledge/doctor-knowled
     DashboardModule,
     VapiModule,
     DoctorKnowledgeModule,
+    CallsModule,
     ConfigModule.forRoot({
       isGlobal: true
     }),

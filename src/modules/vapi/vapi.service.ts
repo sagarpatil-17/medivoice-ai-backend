@@ -38,6 +38,7 @@ export class VapiService {
     ) { }
 
     // HANDLE VAPI WEBHOOK
+
     async handleWebhook(
         body: VapiWebhookBody,
     ): Promise<VapiToolResponse> {
@@ -53,7 +54,15 @@ export class VapiService {
             `[VAPI WEBHOOK RECEIVED] Type: ${message.type}`,
         );
 
-        // Handle only function tool calls here.
+        // Save call lifecycle information.
+        if (
+            message.type === 'status-update' ||
+            message.type === 'end-of-call-report'
+        ) {
+            await this.saveCallEvent(message);
+        }
+
+        // Tool calls must return results to Vapi.
         if (message.type !== 'tool-calls') {
             return {
                 results: [],
@@ -69,11 +78,17 @@ export class VapiService {
             );
         }
 
-        this.logger.log(
-            `[VAPI TOOL CALLS] Call ID: ${callId}, Tools: ${toolCallList
-                .map((tool) => tool.function.name)
-                .join(', ')}`,
-        );
+        // Create a call record if the first received event is tool-calls.
+        await this.prisma.call.upsert({
+            where: { vapiCallId: callId },
+            create: {
+                vapiCallId: callId,
+                status: 'IN_PROGRESS',
+                vapiStatus: 'in-progress',
+                startedAt: new Date(),
+            },
+            update: {},
+        });
 
         const results = await Promise.all(
             toolCallList.map((toolCall) =>
@@ -81,10 +96,9 @@ export class VapiService {
             ),
         );
 
-        return {
-            results,
-        };
+        return { results };
     }
+
 
     // SAFE TOOL EXECUTION
     private async executeToolSafely(
@@ -788,4 +802,127 @@ export class VapiService {
 
         return 'Sorry, the requested operation is temporarily unavailable. Please try again.';
     }
+
+
+    private async saveCallEvent(
+        message: VapiWebhookBody['message'],
+    ): Promise<void> {
+        const callId = message.call?.id;
+
+        if (!callId) {
+            return;
+        }
+
+        const now = new Date();
+
+        const parseDate = (value?: string): Date | undefined => {
+            if (!value) return undefined;
+
+            const date = new Date(value);
+
+            return Number.isNaN(date.getTime())
+                ? undefined
+                : date;
+        };
+
+        const startedAt =
+            parseDate(message.startedAt) ??
+            parseDate(message.call?.startedAt);
+
+        const endedAt =
+            parseDate(message.endedAt) ??
+            parseDate(message.call?.endedAt);
+
+        const durationSeconds =
+            startedAt && endedAt
+                ? Math.max(
+                    0,
+                    Math.floor(
+                        (endedAt.getTime() - startedAt.getTime()) / 1000,
+                    ),
+                )
+                : undefined;
+
+        let status:
+            | 'QUEUED'
+            | 'RINGING'
+            | 'IN_PROGRESS'
+            | 'TRANSFERRING'
+            | 'COMPLETED'
+            | 'FAILED'
+            | 'NO_ANSWER'
+            | undefined;
+
+        if (message.type === 'status-update') {
+            switch (message.status) {
+                case 'scheduled':
+                case 'queued':
+                    status = 'QUEUED';
+                    break;
+
+                case 'ringing':
+                    status = 'RINGING';
+                    break;
+
+                case 'in-progress':
+                    status = 'IN_PROGRESS';
+                    break;
+
+                case 'forwarding':
+                    status = 'TRANSFERRING';
+                    break;
+
+                case 'ended':
+                    status = 'COMPLETED';
+                    break;
+            }
+        }
+
+        if (message.type === 'end-of-call-report') {
+            status = 'COMPLETED';
+        }
+
+        const transcript =
+            message.artifact?.transcript ??
+            undefined;
+
+        const updateData = {
+            ...(message.status
+                ? { vapiStatus: message.status }
+                : {}),
+            ...(status ? { status } : {}),
+            ...(message.call?.type
+                ? { callType: message.call.type }
+                : {}),
+            ...(startedAt ? { startedAt } : {}),
+            ...(endedAt ? { endedAt } : {}),
+            ...(durationSeconds !== undefined
+                ? { durationSeconds }
+                : {}),
+            ...(message.endedReason
+                ? { endedReason: message.endedReason }
+                : {}),
+            ...(transcript ? { transcript } : {}),
+        };
+
+        await this.prisma.call.upsert({
+            where: {
+                vapiCallId: callId,
+            },
+            create: {
+                vapiCallId: callId,
+                status: status ?? 'QUEUED',
+                vapiStatus: message.status,
+                callType: message.call?.type,
+                startedAt: startedAt ?? now,
+                ...updateData,
+            },
+            update: updateData,
+        });
+
+        this.logger.log(
+            `[CALL EVENT SAVED] ${callId} - ${message.type}`,
+        );
+    }
+
 }
