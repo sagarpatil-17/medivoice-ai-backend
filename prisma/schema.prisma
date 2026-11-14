@@ -77,8 +77,9 @@ model User {
   role         UserRole @default(RECEPTIONIST)
   isActive     Boolean  @default(true)
 
-  doctor   Doctor?
-  sessions UserSession[]
+  doctor     Doctor?
+  sessions   UserSession[]
+  identities UserIdentity[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -107,6 +108,19 @@ model UserSession {
 
   @@index([userId, revokedAt])
   @@index([expiresAt])
+}
+
+model UserIdentity {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId          String   @db.ObjectId
+  provider        String
+  providerSubject String
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([provider, providerSubject])
+  @@index([userId])
 }
 
 model Patient {

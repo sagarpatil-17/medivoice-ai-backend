@@ -19,6 +19,7 @@ import { Roles } from '../../common/decorators/roles.decorator.js';
 import { RolesGuard } from '../../common/guards/roles.guard.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { ApiTags } from '@nestjs/swagger';
+import { GoogleLoginDto } from './dto/google-login.dto.js';
 
 interface AuthenticatedRequest extends Request {
     user: {
@@ -130,5 +131,30 @@ export class AuthController {
     @Roles(UserRole.ADMIN)
     async signup(@Body() dto: SignupDto) {
         return this.authService.signup(dto);
+    }
+
+    @Post('google')
+    @HttpCode(HttpStatus.OK)
+    async googleLogin(
+        @Body() dto: GoogleLoginDto,
+        @Req() req: Request,
+        @Res({ passthrough: true }) res: Response,
+    ) {
+        const result = await this.authService.googleLogin(
+            dto.credential,
+            req.get('user-agent'),
+            req.ip,
+        );
+
+        res.cookie(
+            'refresh_token',
+            result.refreshToken,
+            this.getCookieOptions(),
+        );
+
+        return {
+            accessToken: result.accessToken,
+            user: result.user,
+        };
     }
 }

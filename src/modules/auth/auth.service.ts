@@ -13,6 +13,7 @@ import { LoginDto } from './dto/login.dto.js';
 import { JwtPayload } from './types/jwt-payload.type.js';
 import { Prisma } from '@prisma/client';
 import { SignupDto } from './dto/signup.dto.js';
+import { OAuth2Client } from 'google-auth-library';
 
 const REFRESH_COOKIE_TTL_DAYS = 7;
 
@@ -25,6 +26,8 @@ export class AuthService {
         private readonly jwtService: JwtService,
         private readonly configService: ConfigService,
     ) { }
+
+    private readonly googleClient = new OAuth2Client();
 
     private hashRefreshToken(token: string): string {
         return createHash('sha256').update(token).digest('hex');
@@ -349,5 +352,139 @@ export class AuthService {
 
             throw error;
         }
+    }
+
+    async googleLogin(
+        credential: string,
+        userAgent?: string,
+        ipAddress?: string,
+    ) {
+        const clientId = this.configService.getOrThrow<string>(
+            'GOOGLE_CLIENT_ID',
+        );
+
+        let payload;
+
+        try {
+            const ticket = await this.googleClient.verifyIdToken({
+                idToken: credential,
+                audience: clientId,
+            });
+
+            payload = ticket.getPayload();
+
+            // console.log(payload)
+        } catch {
+            throw new UnauthorizedException('Invalid Google credential');
+        }
+
+        if (
+            !payload?.sub ||
+            !payload.email ||
+            payload.email_verified !== true
+        ) {
+            throw new UnauthorizedException(
+                'Google account email is not verified',
+            );
+        }
+
+        const email = payload.email.trim().toLowerCase();
+
+        // 1. Check whether this Google identity is already linked.
+        let identity = await this.prisma.userIdentity.findUnique({
+            where: {
+                provider_providerSubject: {
+                    provider: 'GOOGLE',
+                    providerSubject: payload.sub,
+                },
+            },
+            include: {
+                user: true,
+            },
+        });
+
+        let user = identity?.user ?? null;
+
+        // 2. If not linked, find an existing staff account.
+        if (!user) {
+            user = await this.prisma.user.findUnique({
+                where: { email },
+            });
+
+            if (!user) {
+                throw new UnauthorizedException(
+                    'No MediVoice staff account exists for this Google email',
+                );
+            }
+
+            // 3. Link the verified Google identity to the existing account.
+            try {
+                await this.prisma.userIdentity.create({
+                    data: {
+                        userId: user.id,
+                        provider: 'GOOGLE',
+                        providerSubject: payload.sub,
+                    },
+                });
+            } catch (error) {
+                // Handle concurrent first-time Google login requests.
+                if (
+                    error instanceof Prisma.PrismaClientKnownRequestError &&
+                    error.code === 'P2002'
+                ) {
+                    identity = await this.prisma.userIdentity.findUnique({
+                        where: {
+                            provider_providerSubject: {
+                                provider: 'GOOGLE',
+                                providerSubject: payload.sub,
+                            },
+                        },
+                        include: {
+                            user: true,
+                        },
+                    });
+
+                    if (!identity || identity.userId !== user.id) {
+                        throw new UnauthorizedException(
+                            'Google identity is already linked to another account',
+                        );
+                    }
+
+                    user = identity.user;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        // 4. Check staff account status.
+        if (!user.isActive) {
+            throw new UnauthorizedException('Your account is inactive');
+        }
+
+        // 5. Create the normal MediVoice refresh-token session.
+        const { refreshToken } = await this.createSession(
+            user.id,
+            userAgent,
+            ipAddress,
+        );
+
+        // 6. Generate the normal MediVoice access JWT.
+        const accessToken = await this.generateAccessToken({
+            sub: user.id,
+            email: user.email,
+            role: user.role,
+        });
+
+        return {
+            accessToken,
+            refreshToken,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+            },
+        };
     }
 }
